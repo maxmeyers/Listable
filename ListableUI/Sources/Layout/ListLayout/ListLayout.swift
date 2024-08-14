@@ -457,16 +457,18 @@ extension AnyListLayout
 extension AnyListLayout
 {
     func onDidEndDraggingTargetContentOffset(
-        for targetContentOffset : CGPoint,
-        velocity : CGPoint,
-        visibleContentSize: CGSize
+        for context: ListPagingBehaviorContext
     ) -> CGPoint?
     {
         guard self.pagingBehavior != .none else { return nil }
         
+        if case .custom(let block) = self.pagingBehavior {
+            return block(context)
+        }
+        
         guard let item = self.itemToScrollToOnDidEndDragging(
-            after: targetContentOffset,
-            velocity: velocity
+            after: context.contentOffset,
+            velocity: context.velocity
         ) else {
             return nil
         }
@@ -482,12 +484,12 @@ extension AnyListLayout
             }
         case .firstVisibleItemCentered:
             return direction.switch {
-                CGPoint(x: 0.0, y: item.defaultFrame.midY - (visibleContentSize.height / 2).rounded())
+                CGPoint(x: 0.0, y: item.defaultFrame.midY - (context.visibleContentSize.height / 2).rounded())
             } horizontal: {
-                CGPoint(x: item.defaultFrame.midX - (visibleContentSize.width / 2).rounded(), y: 0.0)
+                CGPoint(x: item.defaultFrame.midX - (context.visibleContentSize.width / 2).rounded(), y: 0.0)
             }
-        case .none:
-            return targetContentOffset
+        case .none, .custom:
+            return context.contentOffset
         }
     }
     

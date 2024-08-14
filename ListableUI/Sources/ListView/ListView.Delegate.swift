@@ -362,9 +362,11 @@ extension ListView
             targetContentOffset: UnsafeMutablePointer<CGPoint>
         ) {
             guard let target = layoutManager.layout.onDidEndDraggingTargetContentOffset(
-                for: scrollView.contentOffset,
-                velocity: velocity,
-                visibleContentSize: scrollView.visibleContentFrame.size
+                for: ListPagingBehaviorContext(
+                    contentOffset: scrollView.contentOffset,
+                    velocity: velocity,
+                    visibleContentSize: scrollView.visibleContentFrame.size
+                )
             ) else {
                 return
             }

@@ -371,7 +371,8 @@ extension ListView
                 return
             }
             
-            targetContentOffset.pointee = target
+            targetContentOffset.pointee = scrollView.contentOffset
+            scrollView.setContentOffset(target, animated: true)
         }
     }
 }

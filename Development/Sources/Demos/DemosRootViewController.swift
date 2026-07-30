@@ -107,6 +107,14 @@ public final class DemosRootViewController : ListViewController
                 )
 
                 Item(
+                    DemoItem(text: "scrollToSection(...) to an offscreen section"),
+                    selectionStyle: .selectable(),
+                    onSelect : { _ in
+                        self?.push(ScrollToOffscreenSectionCompletionHandlerViewController())
+                    }
+                )
+
+                Item(
                     DemoItem(text: "List State & State Reader"),
                     selectionStyle: .selectable(),
                     onSelect: { _ in

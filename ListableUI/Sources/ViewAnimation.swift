@@ -10,7 +10,9 @@ import UIKit
 
 
 /// Specifies the kind of animation to use when updating various parts of a list,
-/// such as updating an item or scrolling to a given position.
+/// such as updating an item or applying new content.
+///
+/// See `ScrollAnimation` for animating a scroll to a given position.
 public enum ViewAnimation {
     
     /// No animation is performed.

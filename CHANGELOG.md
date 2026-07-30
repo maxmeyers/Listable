@@ -2,7 +2,25 @@
 
 ### Fixed
 
+- Fixed a scroll completion handler being stranded when an `animated: true` scroll was requested inside a `UIView.performWithoutAnimation` block. The suppressed scroll never produced a `scrollViewDidEndScrollingAnimation(_:)` callback, so the handler it was queued for was never reported.
+
 ### Added
+
+- Added `ScrollAnimation`, which lets a programmatic scroll run over a specific duration. `UIScrollView` provides no way to configure its built-in animation, so previously a scroll was either instant or ran at a fixed system speed.
+  ```swift
+  list.scrollToSection(
+      with: sectionIdentifier,
+      scrollPosition: ScrollPosition(position: .top),
+      animation: .duration(0.4)
+  )
+  ```
+  Every `animated: Bool` scrolling method on `ListView` and `ListActions.Scrolling` now has an `animation: ScrollAnimation` counterpart. `animated: true` and `false` remain equivalent to `.system` and `.none`, so existing callers are unaffected.
+
+  A duration is honored even when the target has not been laid out yet — the scroll is deferred until the presentation state catches up, and the animation wraps that deferred content offset change rather than the initial request. The list advances its content offset on each frame, the same as it does for the system animation, so content stays laid out for the length of the scroll.
+
+  A `.duration` scroll is interrupted by the same things that interrupt the scroll view's own animation — the user taking hold of the list, or another scroll replacing it — and reports its completion handler either way. `ListActions.Scrolling.cancelScrollAnimation()` stops one explicitly.
+
+- Added `completion` handlers to `scrollToTop(...)` and `scrollToLastItem(...)`, which previously had no way to report when they finished.
 
 ### Removed
 

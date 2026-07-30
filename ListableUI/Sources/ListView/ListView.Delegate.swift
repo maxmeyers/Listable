@@ -100,17 +100,7 @@ extension ListView
 
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView)
         {
-            let scrollCompletions = self.view.drainScrollCompletionHandlers()
-
-            ListStateObserver.perform(self.view.stateObserver.onDidEndScrollingAnimation, "Did End Scrolling Animation", with: self.view) { actions in
-                ListStateObserver.DidEndScrollingAnimation(
-                    actions: actions,
-                    positionInfo: self.view.scrollPositionInfo
-                )
-            }
-            
-            // Notify the ListView that scrolling ended.
-            self.view.performScrollCompletions(scrollCompletions)
+            self.view.didEndScrollingAnimation()
         }
 
         private var oldSelectedItems : Set<AnyIdentifier> = []
@@ -330,6 +320,10 @@ extension ListView
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView)
         {
             self.view.isUserScrollInProgress = true
+
+            // The user taking hold of the list ends a programmatic scroll, the same way it
+            // ends the scroll view's own scrolling animation.
+            self.view.cancelScrollAnimation()
 
             self.view.liveCells.perform {
                 $0.closeSwipeActions()

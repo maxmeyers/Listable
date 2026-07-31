@@ -1108,6 +1108,15 @@ public final class ListView : UIView
 
         switch animation.storage {
         case .none, .system:
+            // A scroll with nowhere to go starts no animation, so the scroll view never
+            // calls `scrollViewDidEndScrollingAnimation(_:)` and a handler queued for that
+            // callback would wait forever. Report it the way an unanimated scroll is
+            // reported instead.
+            guard collectionView.contentOffset != targetOffset else {
+                handleScrollCompletion(reason: .scrolled(animated: false), completion: completion)
+                return
+            }
+
             collectionView.setContentOffset(targetOffset, animated: animation.usesSystemAnimation)
             handleScrollCompletion(
                 reason: .scrolled(animated: animation.usesSystemAnimation),
@@ -1127,7 +1136,9 @@ public final class ListView : UIView
     /// `scrollRectToVisible(_:animated:)` compute where they land internally, so a driven
     /// animation has to perform the change unanimated and read the resulting offset back.
     ///
-    /// `changeOffset` receives whether it should ask the scroll view to animate.
+    /// `changeOffset` receives whether it should ask the scroll view to animate, and may be
+    /// invoked more than once — an unanimated call is how this discovers where the scroll
+    /// would land.
     ///
     /// Callers that have already determined the list cannot scroll should report
     /// `.cannotScroll` themselves instead of calling this.
@@ -1141,6 +1152,26 @@ public final class ListView : UIView
 
         switch animation.storage {
         case .none, .system:
+            // As in `applyScroll(with:to:completion:)`, an animated scroll that does not
+            // move reports nothing, stranding a queued handler. Only this variant cannot
+            // see that in advance, so it has to perform the change unanimated to find out.
+            // That costs a layout pass, so it is only worth doing when there is in fact a
+            // handler to strand.
+            if animation.usesSystemAnimation, completion != nil {
+                let startOffset = collectionView.contentOffset
+
+                changeOffset(false)
+
+                let movesContent = collectionView.contentOffset != startOffset
+
+                collectionView.setContentOffset(startOffset, animated: false)
+
+                guard movesContent else {
+                    handleScrollCompletion(reason: .scrolled(animated: false), completion: completion)
+                    return
+                }
+            }
+
             changeOffset(animation.usesSystemAnimation)
             handleScrollCompletion(
                 reason: .scrolled(animated: animation.usesSystemAnimation),

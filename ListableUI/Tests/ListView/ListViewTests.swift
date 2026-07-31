@@ -2213,6 +2213,42 @@ class ListViewTests: XCTestCase
         }
     }
 
+    /// A `.system` scroll that does not move must still report its completion.
+    ///
+    /// `setContentOffset(_:animated: true)` with the offset the scroll view is already at
+    /// starts no animation and never calls `scrollViewDidEndScrollingAnimation(_:)`, so a
+    /// handler queued for that callback waits forever. Both `applyScroll` overloads are
+    /// covered: `scrollToTop` computes its destination through the collection view, while
+    /// `scrollToLastItem` passes an explicit target offset.
+    func test_scroll_with_system_animation_that_does_not_move_reports_completion() throws {
+        try testControllerCase("no-op system scroll") { viewController in
+            let alreadyAtTop = expectation(description: "scrollToTop completed")
+
+            viewController.list.scrollToTop(animation: .system) { _ in
+                alreadyAtTop.fulfill()
+            }
+
+            wait(for: [alreadyAtTop], timeout: 1.0)
+
+            // Land at the bottom without animating, so the next scroll has nowhere to go.
+            let atBottom = expectation(description: "scrollToLastItem completed")
+
+            viewController.list.scrollToLastItem(animation: .none) { _ in
+                atBottom.fulfill()
+            }
+
+            wait(for: [atBottom], timeout: 1.0)
+
+            let alreadyAtBottom = expectation(description: "second scrollToLastItem completed")
+
+            viewController.list.scrollToLastItem(animation: .system) { _ in
+                alreadyAtBottom.fulfill()
+            }
+
+            wait(for: [alreadyAtBottom], timeout: 1.0)
+        }
+    }
+
     /// The `animated` flag must keep mapping onto the animations it always described, so
     /// that existing callers are unaffected by the introduction of `ScrollAnimation`.
     func test_scroll_animation_from_animated_flag() {

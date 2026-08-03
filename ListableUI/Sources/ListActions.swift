@@ -111,6 +111,30 @@ public final class ListActions {
         }
 
         ///
+        /// Scrolls to the provided item, with the provided positioning, using the provided animation.
+        /// If the item is contained in the list, true is returned. If it is not, false is returned.
+        ///
+        @discardableResult
+        public func scrollTo(
+            item : AnyItem,
+            position : ScrollPosition,
+            animation : ScrollAnimation,
+            completion: ScrollCompletion? = nil
+        ) -> Bool
+        {
+            guard let listView = self.listView else {
+                return false
+            }
+
+            return listView.scrollTo(
+                item: item,
+                position: position,
+                animation: animation,
+                completion: completion
+            )
+        }
+
+        ///
         /// Scrolls to a custom vertical offset for the provided item.
         /// The adjustment receives the item's frame and visible content frame,
         /// then returns the vertical delta to apply.
@@ -131,7 +155,29 @@ public final class ListActions {
                 completion: completion
             )
         }
-        
+
+        ///
+        /// Scrolls to a custom vertical offset for the provided item, using the provided animation.
+        /// The adjustment receives the item's frame and visible content frame,
+        /// then returns the vertical delta to apply.
+        /// If the item is contained in the list, true is returned. If it is not, false is returned.
+        ///
+        @discardableResult
+        public func scrollTo(
+            item : AnyItem,
+            contentOffsetAdjustment : @escaping ListItemScrollPositionAdjustment,
+            animation : ScrollAnimation,
+            completion: ScrollCompletion? = nil
+        ) -> Bool
+        {
+            self.scrollTo(
+                item: item.anyIdentifier,
+                contentOffsetAdjustment: contentOffsetAdjustment,
+                animation: animation,
+                completion: completion
+            )
+        }
+
         ///
         /// Scrolls to the item with the provided identifier, with the provided positioning.
         /// If there is more than one item with the same identifier, the list scrolls to the first.
@@ -153,6 +199,32 @@ public final class ListActions {
                 item: item,
                 position: position,
                 animated: animated,
+                completion: completion
+            )
+        }
+
+        ///
+        /// Scrolls to the item with the provided identifier, with the provided positioning,
+        /// using the provided animation.
+        /// If there is more than one item with the same identifier, the list scrolls to the first.
+        /// If the item is contained in the list, true is returned. If it is not, false is returned.
+        ///
+        @discardableResult
+        public func scrollTo(
+            item : AnyIdentifier,
+            position : ScrollPosition,
+            animation : ScrollAnimation,
+            completion: ScrollCompletion? = nil
+        ) -> Bool
+        {
+            guard let listView = self.listView else {
+                return false
+            }
+
+            return listView.scrollTo(
+                item: item,
+                position: position,
+                animation: animation,
                 completion: completion
             )
         }
@@ -180,6 +252,34 @@ public final class ListActions {
                 item: item,
                 contentOffsetAdjustment: contentOffsetAdjustment,
                 animated: animated,
+                completion: completion
+            )
+        }
+
+        ///
+        /// Scrolls to a custom vertical offset for the item with the provided identifier,
+        /// using the provided animation.
+        /// The adjustment receives the item's frame and visible content frame,
+        /// then returns the vertical delta to apply.
+        /// If there is more than one item with the same identifier, the list scrolls to the first.
+        /// If the item is contained in the list, true is returned. If it is not, false is returned.
+        ///
+        @discardableResult
+        public func scrollTo(
+            item : AnyIdentifier,
+            contentOffsetAdjustment : @escaping ListItemScrollPositionAdjustment,
+            animation : ScrollAnimation,
+            completion: ScrollCompletion? = nil
+        ) -> Bool
+        {
+            guard let listView = self.listView else {
+                return false
+            }
+
+            return listView.scrollTo(
+                item: item,
+                contentOffsetAdjustment: contentOffsetAdjustment,
+                animation: animation,
                 completion: completion
             )
         }
@@ -220,35 +320,114 @@ public final class ListActions {
                 completion: completion
             )
         }
-        
-        /// Scrolls to the very top of the list, which includes displaying the list header.
+
+        ///
+        /// Scrolls to the section with the given identifier, with the provided scroll and
+        /// section positioning, using the provided animation.
+        ///
+        /// See `scrollToSection(with:sectionPosition:scrollPosition:animated:completion:)`
+        /// for how the list picks which part of the section to scroll to.
+        ///
         @discardableResult
-        public func scrollToTop(
-            animated: Bool = false
+        public func scrollToSection(
+            with identifier : AnyIdentifier,
+            sectionPosition : SectionPosition = .top,
+            scrollPosition : ScrollPosition,
+            animation: ScrollAnimation,
+            completion: ScrollCompletion? = nil
         ) -> Bool
         {
             guard let listView = self.listView else {
                 return false
             }
-            
+
+            return listView.scrollToSection(
+                with: identifier,
+                sectionPosition: sectionPosition,
+                scrollPosition: scrollPosition,
+                animation: animation,
+                completion: completion
+            )
+        }
+        
+        /// Scrolls to the very top of the list, which includes displaying the list header.
+        @discardableResult
+        public func scrollToTop(
+            animated: Bool = false,
+            completion: ScrollCompletion? = nil
+        ) -> Bool
+        {
+            guard let listView = self.listView else {
+                return false
+            }
+
             return listView.scrollToTop(
-                animated: animated
+                animated: animated,
+                completion: completion
+            )
+        }
+
+        /// Scrolls to the very top of the list, which includes displaying the list header,
+        /// using the provided animation.
+        @discardableResult
+        public func scrollToTop(
+            animation: ScrollAnimation,
+            completion: ScrollCompletion? = nil
+        ) -> Bool
+        {
+            guard let listView = self.listView else {
+                return false
+            }
+
+            return listView.scrollToTop(
+                animation: animation,
+                completion: completion
             )
         }
 
         /// Scrolls to the last item in the list. If the list contains no items, no action is performed.
         @discardableResult
         public func scrollToLastItem(
-            animated: Bool = false
+            animated: Bool = false,
+            completion: ScrollCompletion? = nil
         ) -> Bool
         {
             guard let listView = self.listView else {
                 return false
             }
-           
+
             return listView.scrollToLastItem(
-                animated: animated
+                animated: animated,
+                completion: completion
             )
+        }
+
+        /// Scrolls to the last item in the list, using the provided animation.
+        /// If the list contains no items, no action is performed.
+        @discardableResult
+        public func scrollToLastItem(
+            animation: ScrollAnimation,
+            completion: ScrollCompletion? = nil
+        ) -> Bool
+        {
+            guard let listView = self.listView else {
+                return false
+            }
+
+            return listView.scrollToLastItem(
+                animation: animation,
+                completion: completion
+            )
+        }
+
+        /// Stops a scroll animation the list is driving itself, where it is.
+        ///
+        /// This has no effect on the scroll view's own animation, which is stopped by the
+        /// user taking hold of the list. Only a `ScrollAnimation.duration` scroll is
+        /// affected. Its completion handler is reported as it would be on a normal finish.
+        public func cancelScrollAnimation()
+        {
+            self.listView?.cancelScrollAnimation()
         }
     }
     

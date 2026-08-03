@@ -1991,6 +1991,304 @@ class ListViewTests: XCTestCase
         }
     }
 
+    // MARK: Scroll animations
+
+    /// Scrolls to a section far enough down the list that it has not been laid out yet,
+    /// and waits for the scroll's completion handler.
+    ///
+    /// - Returns: How many times the completion handler was reported.
+    @discardableResult
+    private func scrollToOffscreenSection(
+        of viewController: ViewController,
+        animation: ScrollAnimation,
+        timeout: TimeInterval = 1.0
+    ) -> Int {
+        var completionCount = 0
+        let scrolled = expectation(description: "Scroll completed")
+
+        viewController.list.scrollToSection(
+            with: Section.identifier(with: "Section 4"),
+            sectionPosition: .top,
+            scrollPosition: ScrollPosition(position: .top, ifAlreadyVisible: .scrollToPosition),
+            animation: animation,
+            completion: { _ in
+                completionCount += 1
+                scrolled.fulfill()
+            }
+        )
+
+        wait(for: [scrolled], timeout: timeout)
+
+        return completionCount
+    }
+
+    /// A `.duration` animation must report its completion handler exactly once.
+    ///
+    /// It drives the content offset itself with an unanimated change, which means the
+    /// scroll view never calls `scrollViewDidEndScrollingAnimation(_:)`. A handler
+    /// queued for that callback would be stranded, and one reported from both places
+    /// would fire twice.
+    func test_scroll_to_section_with_duration_animation_reports_completion_once() throws {
+        try testControllerCase("duration animation", sectionCount: 5, sectionHeader: true) { viewController in
+            let completionCount = scrollToOffscreenSection(of: viewController, animation: .duration(0.2))
+
+            // Give any stray second callback a chance to arrive before asserting.
+            waitForOneRunloop()
+            waitForOneRunloop()
+
+            XCTAssertEqual(completionCount, 1)
+        }
+    }
+
+    /// A `.duration` animation must land on the same content offset that the system
+    /// animation would have produced. The duration changes how the list gets there,
+    /// not where it ends up.
+    func test_scroll_to_section_with_duration_animation_matches_system_offset() throws {
+        func settledOffset(scrollingWith animation: ScrollAnimation) throws -> CGPoint {
+            var offset = CGPoint.zero
+
+            try testControllerCase("offset parity", sectionCount: 5, sectionHeader: true) { viewController in
+                scrollToOffscreenSection(of: viewController, animation: animation)
+
+                offset = viewController.list.collectionView.contentOffset
+            }
+
+            return offset
+        }
+
+        let system = try settledOffset(scrollingWith: .system)
+        let duration = try settledOffset(scrollingWith: .duration(0.2))
+
+        XCTAssertEqual(system.y, duration.y, accuracy: 0.5)
+        XCTAssertEqual(system.x, duration.x, accuracy: 0.5)
+    }
+
+    /// This is the behavior the API exists for.
+    ///
+    /// Scrolling to a section that has not been laid out yet routes through
+    /// `preparePresentationStateForScrollToSection`, which defers the real content offset
+    /// change into an `updatePresentationState` completion. The animation has to wrap
+    /// *that* deferred change, otherwise the list hard-jumps to the target and the
+    /// requested duration is silently ignored.
+    func test_scroll_to_not_yet_laid_out_section_with_duration_animation_animates() throws {
+        try testControllerCase("animates offscreen section", sectionCount: 5, sectionHeader: true) { viewController in
+            let collectionView = viewController.list.collectionView
+            let startOffset = collectionView.contentOffset.y
+
+            let duration: TimeInterval = 0.5
+
+            var midScroll: CGFloat = 0
+
+            // The offset change is deferred until the presentation state catches up, so
+            // let that land before sampling the scroll it should have animated.
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration / 2) {
+                midScroll = collectionView.contentOffset.y
+            }
+
+            scrollToOffscreenSection(of: viewController, animation: .duration(duration))
+
+            let target = collectionView.contentOffset.y
+
+            XCTAssertGreaterThan(target, startOffset, "The list should have scrolled down.")
+            XCTAssertGreaterThan(midScroll, startOffset, "The scroll should have been underway.")
+            XCTAssertLessThan(
+                midScroll,
+                target,
+                "The scroll should have animated toward the target, not jumped to it."
+            )
+        }
+    }
+
+    /// A driven scroll has to advance the list's real content offset, so that the list
+    /// keeps laying out content as it passes by.
+    ///
+    /// Animating the content offset inside a `UIView` animation block looks equivalent but
+    /// is not: the offset lands on the target immediately, the list lays out its content
+    /// there, and only the layer's bounds animate back over a region that no longer has
+    /// anything in it. The scroll is smooth and completely blank.
+    func test_scroll_with_duration_animation_keeps_content_laid_out() throws {
+        try testControllerCase("lays out while scrolling", sectionCount: 5, sectionHeader: true) { viewController in
+            let duration: TimeInterval = 0.5
+
+            var itemsWhileAnimating: Set<ListScrollPositionInfo.VisibleItem> = []
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration / 2) {
+                itemsWhileAnimating = viewController.list.scrollPositionInfo.visibleItems
+            }
+
+            scrollToOffscreenSection(of: viewController, animation: .duration(duration))
+
+            XCTAssertFalse(
+                itemsWhileAnimating.isEmpty,
+                "The list should have had content on screen while scrolling."
+            )
+
+            // Content that is only laid out at the destination would report the same items
+            // throughout, because it never lays out anywhere else.
+            XCTAssertNotEqual(
+                itemsWhileAnimating,
+                viewController.list.scrollPositionInfo.visibleItems,
+                "The list should have laid out the content it passed over, not just the target's."
+            )
+        }
+    }
+
+    /// A driven scroll has to be interruptible, the way the scroll view's own animation is
+    /// when the user takes hold of the list.
+    func test_duration_scroll_animation_stops_where_it_is_when_cancelled() throws {
+        try testControllerCase("cancels mid-scroll", sectionCount: 5, sectionHeader: true) { viewController in
+            let collectionView = viewController.list.collectionView
+
+            // The scroll is deferred until the presentation state catches up, so let it get
+            // underway before interrupting it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                viewController.list.cancelScrollAnimation()
+            }
+
+            // A cancelled scroll still reports its completion. Leaving the handler queued
+            // would strand it, since no scroll-end callback is coming — and a two second
+            // animation could not have finished on its own by the time this returns.
+            scrollToOffscreenSection(of: viewController, animation: .duration(2), timeout: 1.0)
+
+            let offsetAtCancellation = collectionView.contentOffset.y
+
+            XCTAssertGreaterThan(
+                offsetAtCancellation,
+                0,
+                "The scroll should have been underway when it was cancelled."
+            )
+
+            waitFor(duration: 0.3)
+
+            XCTAssertEqual(
+                collectionView.contentOffset.y,
+                offsetAtCancellation,
+                accuracy: 0.5,
+                "A cancelled scroll should stay where it was stopped."
+            )
+        }
+    }
+
+    /// A non-positive duration cannot be animated, so it must behave exactly like `.none`
+    /// rather than producing a zero-length animation with different completion timing.
+    func test_scroll_animation_duration_of_zero_or_less_is_not_animated() {
+        XCTAssertEqual(ScrollAnimation.duration(0), .none)
+        XCTAssertEqual(ScrollAnimation.duration(-0.25), .none)
+    }
+
+    /// A caller inside `UIView.performWithoutAnimation` expects no animation, and must
+    /// still have its completion handler reported.
+    ///
+    /// The section here has not been laid out yet, so the offset change is deferred onto a
+    /// later runloop pass — outside the `performWithoutAnimation` block, where animations
+    /// read as enabled again. The requested animation therefore has to be resolved against
+    /// the caller's context when the scroll is requested, not when the offset changes.
+    func test_scroll_with_duration_animation_is_not_animated_when_animations_disabled() throws {
+        try testControllerCase("animations disabled", sectionCount: 5, sectionHeader: true) { viewController in
+            let collectionView = viewController.list.collectionView
+
+            UIView.performWithoutAnimation {
+                // An honored two second animation could not have completed within the
+                // timeout, so reaching it at all means the animation was suppressed.
+                scrollToOffscreenSection(of: viewController, animation: .duration(2), timeout: 0.4)
+            }
+
+            let offsetAtCompletion = collectionView.contentOffset.y
+
+            XCTAssertGreaterThan(
+                offsetAtCompletion,
+                0,
+                "The list should still have scrolled, just without animating."
+            )
+
+            // A scroll that was still animating would keep moving past its completion.
+            waitFor(duration: 0.2)
+
+            XCTAssertEqual(
+                collectionView.contentOffset.y,
+                offsetAtCompletion,
+                accuracy: 0.5,
+                "The deferred content offset change must honor the caller's suppressed animations."
+            )
+        }
+    }
+
+    /// A `.system` scroll that does not move must still report its completion.
+    ///
+    /// `setContentOffset(_:animated: true)` with the offset the scroll view is already at
+    /// starts no animation and never calls `scrollViewDidEndScrollingAnimation(_:)`, so a
+    /// handler queued for that callback waits forever. Both `applyScroll` overloads are
+    /// covered: `scrollToTop` computes its destination through the collection view, while
+    /// `scrollToLastItem` passes an explicit target offset.
+    func test_scroll_with_system_animation_that_does_not_move_reports_completion() throws {
+        try testControllerCase("no-op system scroll") { viewController in
+            let alreadyAtTop = expectation(description: "scrollToTop completed")
+
+            viewController.list.scrollToTop(animation: .system) { _ in
+                alreadyAtTop.fulfill()
+            }
+
+            wait(for: [alreadyAtTop], timeout: 1.0)
+
+            // Land at the bottom without animating, so the next scroll has nowhere to go.
+            let atBottom = expectation(description: "scrollToLastItem completed")
+
+            viewController.list.scrollToLastItem(animation: .none) { _ in
+                atBottom.fulfill()
+            }
+
+            wait(for: [atBottom], timeout: 1.0)
+
+            let alreadyAtBottom = expectation(description: "second scrollToLastItem completed")
+
+            viewController.list.scrollToLastItem(animation: .system) { _ in
+                alreadyAtBottom.fulfill()
+            }
+
+            wait(for: [alreadyAtBottom], timeout: 1.0)
+        }
+    }
+
+    /// The `animated` flag must keep mapping onto the animations it always described, so
+    /// that existing callers are unaffected by the introduction of `ScrollAnimation`.
+    func test_scroll_animation_from_animated_flag() {
+        XCTAssertEqual(ScrollAnimation(animated: true), .system)
+        XCTAssertEqual(ScrollAnimation(animated: false), .none)
+    }
+
+    /// An in-flight driven animation must not keep itself alive.
+    ///
+    /// `CADisplayLink` retains its target and the main runloop retains the link, so a driver
+    /// that targeted itself could never be deallocated while animating — it would go on
+    /// writing to a scroll view belonging to a torn down list.
+    func test_scroll_animation_driver_does_not_retain_itself_while_animating() {
+        let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        scrollView.contentSize = CGSize(width: 100, height: 10_000)
+
+        weak var weakDriver: ScrollAnimationDriver?
+
+        autoreleasepool {
+            let driver = ScrollAnimationDriver(
+                scrollView: scrollView,
+                from: .zero,
+                to: CGPoint(x: 0, y: 500),
+                duration: 5,
+                completion: {}
+            )
+
+            weakDriver = driver
+
+            driver.start()
+
+            // Let the animation actually get underway before dropping the reference.
+            waitFor(duration: 0.1)
+
+            XCTAssertNotNil(weakDriver)
+        }
+
+        XCTAssertNil(weakDriver, "An animating driver should not be kept alive by its display link.")
+    }
+
     func test_changing_identifier_resets_content_offset() {
         let listView = ListView(frame: CGRect(x: 0, y: 0, width: 200, height: 400))
 

@@ -137,9 +137,13 @@ public final class ListView : UIView
     }
     
     deinit
-    {        
+    {
         self.keyboardObserver.remove(delegate: self)
-        
+
+        // A driven scroll animation would otherwise keep running against a torn down list,
+        // because the display link driving it is retained by the main runloop.
+        self.cancelScrollAnimation()
+
         /**
          Even though these are zeroing weak references in UIKIt as of iOS 9.0,
          
@@ -561,6 +565,26 @@ public final class ListView : UIView
     }
 
     ///
+    /// Scrolls to the provided item, with the provided positioning, using the provided animation.
+    /// If the item is contained in the list, true is returned. If it is not, false is returned.
+    ///
+    @discardableResult
+    public func scrollTo(
+        item : AnyItem,
+        position : ScrollPosition,
+        animation : ScrollAnimation,
+        completion: ScrollCompletion? = nil
+    ) -> Bool
+    {
+        self.scrollTo(
+            item: item.anyIdentifier,
+            position: position,
+            animation: animation,
+            completion: completion
+        )
+    }
+
+    ///
     /// Scrolls to a custom vertical offset for the provided item.
     /// The adjustment receives the item's frame and visible content frame,
     /// then returns the vertical delta to apply.
@@ -581,6 +605,28 @@ public final class ListView : UIView
             completion: completion
         )
     }
+
+    ///
+    /// Scrolls to a custom vertical offset for the provided item, using the provided animation.
+    /// The adjustment receives the item's frame and visible content frame,
+    /// then returns the vertical delta to apply.
+    /// If the item is contained in the list, true is returned. If it is not, false is returned.
+    ///
+    @discardableResult
+    public func scrollTo(
+        item : AnyItem,
+        contentOffsetAdjustment : @escaping ListItemScrollPositionAdjustment,
+        animation : ScrollAnimation,
+        completion: ScrollCompletion? = nil
+    ) -> Bool
+    {
+        self.scrollTo(
+            item: item.anyIdentifier,
+            contentOffsetAdjustment: contentOffsetAdjustment,
+            animation: animation,
+            completion: completion
+        )
+    }
         
     ///
     /// Scrolls to the item with the provided identifier, with the provided positioning.
@@ -595,15 +641,52 @@ public final class ListView : UIView
         completion: ScrollCompletion? = nil
     ) -> Bool
     {
+        scrollTo(
+            item: item,
+            position: position,
+            animation: ScrollAnimation(animated: animated),
+            completion: completion
+        )
+    }
+
+    ///
+    /// Scrolls to the item with the provided identifier, with the provided positioning,
+    /// using the provided animation.
+    /// If there is more than one item with the same identifier, the list scrolls to the first.
+    /// If the item is contained in the list, true is returned. If it is not, false is returned.
+    ///
+    @discardableResult
+    public func scrollTo(
+        item : AnyIdentifier,
+        position : ScrollPosition,
+        animation : ScrollAnimation,
+        completion: ScrollCompletion? = nil
+    ) -> Bool
+    {
+        scrollTo(
+            item: item,
+            position: position,
+            resolvedAnimation: animation.resolvedForCurrentContext(),
+            completion: completion
+        )
+    }
+
+    /// - Parameter animation: Must already have been resolved against the calling
+    ///   context by `ScrollAnimation.resolvedForCurrentContext()`.
+    @discardableResult
+    private func scrollTo(
+        item : AnyIdentifier,
+        position : ScrollPosition,
+        resolvedAnimation animation : ScrollAnimation,
+        completion: ScrollCompletion? = nil
+    ) -> Bool
+    {
         // Make sure the item identifier is valid.
 
         guard let toIndexPath = self.storage.allContent.firstIndexPathForItem(with: item) else {
             handleScrollCompletion(reason: .cannotScroll, completion: completion)
             return false
         }
-
-        // If user is performing this in a `UIView.performWithoutAnimation` block, respect that and don't animate, regardless of what the animated parameter is.
-        let shouldAnimate = animated && UIView.areAnimationsEnabled
 
         return preparePresentationStateForScroll(to: toIndexPath, handlerWhenFailed: completion) {
             
@@ -643,30 +726,40 @@ public final class ListView : UIView
                 self.performScroll(
                     to: itemFrameAdjustedForStickyHeaders,
                     scrollPosition: position,
-                    animated: shouldAnimate,
+                    animation: animation,
                     completion: completion
                 )
             } else {
                 let scrollPosition = position.position.toUICollectionViewScrollPosition(
                     for: self.collectionViewLayout.layout.direction
                 )
-                self.collectionView.scrollToItem(
-                    at: toIndexPath,
-                    at: scrollPosition,
-                    animated: shouldAnimate
+
+                // `willScroll` is derived from the pre-scroll viewport, so it has to be
+                // evaluated before the content offset changes.
+                let willScroll = self.willScroll(
+                    for: scrollPosition,
+                    itemFrame: itemFrame,
+                    viewport: viewport.inset(by: self.collectionView.adjustedContentInset),
+                    contentSize: self.contentSize
                 )
-                if let completion {
-                    let willScroll = self.willScroll(
-                        for: scrollPosition,
-                        itemFrame: itemFrame,
-                        viewport: viewport.inset(by: self.collectionView.adjustedContentInset),
-                        contentSize: self.contentSize
-                    )
-                    if willScroll {
-                        self.handleScrollCompletion(reason: .scrolled(animated: animated), completion: completion)
-                    } else {
-                        self.handleScrollCompletion(reason: .cannotScroll, completion: completion)
+
+                if willScroll {
+                    self.applyScroll(with: animation, completion: completion) { animated in
+                        self.collectionView.scrollToItem(
+                            at: toIndexPath,
+                            at: scrollPosition,
+                            animated: animated
+                        )
                     }
+                } else {
+                    // The collection view is not expected to move, so there is no
+                    // scroll-end callback to wait on.
+                    self.collectionView.scrollToItem(
+                        at: toIndexPath,
+                        at: scrollPosition,
+                        animated: animation.usesSystemAnimation
+                    )
+                    self.handleScrollCompletion(reason: .cannotScroll, completion: completion)
                 }
             }
         }
@@ -687,15 +780,38 @@ public final class ListView : UIView
         completion: ScrollCompletion? = nil
     ) -> Bool
     {
+        scrollTo(
+            item: item,
+            contentOffsetAdjustment: contentOffsetAdjustment,
+            animation: ScrollAnimation(animated: animated),
+            completion: completion
+        )
+    }
+
+    ///
+    /// Scrolls to a custom vertical offset for the item with the provided identifier,
+    /// using the provided animation.
+    /// The adjustment receives the item's frame and visible content frame,
+    /// then returns the vertical delta to apply.
+    /// If there is more than one item with the same identifier, the list scrolls to the first.
+    /// If the item is contained in the list, true is returned. If it is not, false is returned.
+    ///
+    @discardableResult
+    public func scrollTo(
+        item : AnyIdentifier,
+        contentOffsetAdjustment : @escaping ListItemScrollPositionAdjustment,
+        animation : ScrollAnimation,
+        completion: ScrollCompletion? = nil
+    ) -> Bool
+    {
+        let animation = animation.resolvedForCurrentContext()
+
         // Make sure the item identifier is valid.
 
         guard let toIndexPath = self.storage.allContent.firstIndexPathForItem(with: item) else {
             handleScrollCompletion(reason: .cannotScroll, completion: completion)
             return false
         }
-
-        // If user is performing this in a `UIView.performWithoutAnimation` block, respect that and don't animate, regardless of what the animated parameter is.
-        let shouldAnimate = animated && UIView.areAnimationsEnabled
 
         return preparePresentationStateForScroll(to: toIndexPath, handlerWhenFailed: completion) {
 
@@ -720,7 +836,7 @@ public final class ListView : UIView
 
             self.performScroll(
                 toContentOffset: resultOffset,
-                animated: shouldAnimate,
+                animation: animation,
                 completion: completion
             )
         }
@@ -750,6 +866,33 @@ public final class ListView : UIView
         completion: ScrollCompletion? = nil
     ) -> Bool
     {
+        scrollToSection(
+            with: identifier,
+            sectionPosition: sectionPosition,
+            scrollPosition: scrollPosition,
+            animation: ScrollAnimation(animated: animated),
+            completion: completion
+        )
+    }
+
+    ///
+    /// Scrolls to the section with the given identifier, with the provided scroll and
+    /// section positioning, using the provided animation.
+    ///
+    /// See `scrollToSection(with:sectionPosition:scrollPosition:animated:completion:)`
+    /// for how the list picks which part of the section to scroll to.
+    ///
+    @discardableResult
+    public func scrollToSection(
+        with identifier : AnyIdentifier,
+        sectionPosition : SectionPosition = .top,
+        scrollPosition : ScrollPosition,
+        animation: ScrollAnimation,
+        completion: ScrollCompletion? = nil
+    ) -> Bool
+    {
+        let animation = animation.resolvedForCurrentContext()
+
         let storageContent = storage.allContent
 
         // Make sure the section identifier is valid.
@@ -807,21 +950,24 @@ public final class ListView : UIView
                 self.performScroll(
                     to: footerFrameAdjustedForStickyHeaders ?? targetSupplementaryView.defaultFrame,
                     scrollPosition: scrollPosition,
-                    animated: animated,
+                    animation: animation,
                     completion: completion
                 )
             } else if let adjacentItem = adjacentItem {
+                // This runs inside the presentation state update, where animations are
+                // suppressed, so the already-resolved animation must be passed straight
+                // through rather than resolved again.
                 self.scrollTo(
-                    item: adjacentItem,
+                    item: adjacentItem.anyIdentifier,
                     position: scrollPosition,
-                    animated: animated,
+                    resolvedAnimation: animation,
                     completion: completion
                 )
             } else {
                 self.performScroll(
                     to: fallbackSupplementaryView.defaultFrame,
                     scrollPosition: scrollPosition,
-                    animated: animated,
+                    animation: animation,
                     completion: completion
                 )
             }
@@ -831,49 +977,82 @@ public final class ListView : UIView
     /// Scrolls to the very top of the list, which includes displaying the list header.
     @discardableResult
     public func scrollToTop(
-        animated: Bool = false
+        animated: Bool = false,
+        completion: ScrollCompletion? = nil
     ) -> Bool {
-        
+        scrollToTop(
+            animation: ScrollAnimation(animated: animated),
+            completion: completion
+        )
+    }
+
+    /// Scrolls to the very top of the list, which includes displaying the list header,
+    /// using the provided animation.
+    @discardableResult
+    public func scrollToTop(
+        animation: ScrollAnimation,
+        completion: ScrollCompletion? = nil
+    ) -> Bool {
+
+        let animation = animation.resolvedForCurrentContext()
+
         // The rect we scroll to must have an area – an empty rect will result in no scrolling.
         let rect = CGRect(origin: .zero, size: CGSize(width: 1.0, height: 1.0))
 
-        // If user is performing this in a `UIView.performWithoutAnimation` block, respect that and don't animate, regardless of what the animated parameter is.
-        let shouldAnimate = animated && UIView.areAnimationsEnabled
-
-        return self.preparePresentationStateForScroll(to: IndexPath(item: 0, section: 0), handlerWhenFailed: nil)  {
-            self.collectionView.scrollRectToVisible(rect, animated: shouldAnimate)
+        return self.preparePresentationStateForScroll(to: IndexPath(item: 0, section: 0), handlerWhenFailed: completion)  {
+            self.applyScroll(with: animation, completion: completion) { animated in
+                self.collectionView.scrollRectToVisible(rect, animated: animated)
+            }
         }
     }
 
     /// Scrolls to the last item in the list. If the list contains no items, no action is performed.
     @discardableResult
     public func scrollToLastItem(
-        animated: Bool = false
+        animated: Bool = false,
+        completion: ScrollCompletion? = nil
+    ) -> Bool {
+        scrollToLastItem(
+            animation: ScrollAnimation(animated: animated),
+            completion: completion
+        )
+    }
+
+    /// Scrolls to the last item in the list, using the provided animation.
+    /// If the list contains no items, no action is performed.
+    @discardableResult
+    public func scrollToLastItem(
+        animation: ScrollAnimation,
+        completion: ScrollCompletion? = nil
     ) -> Bool {
 
         // Make sure we have a valid last index path.
 
         guard let toIndexPath = self.storage.allContent.lastIndexPath() else {
+            handleScrollCompletion(reason: .cannotScroll, completion: completion)
             return false
         }
 
-        // If user is performing this in a `UIView.performWithoutAnimation` block, respect that and don't animate, regardless of what the animated parameter is.
-        let shouldAnimate = animated && UIView.areAnimationsEnabled
+        let animation = animation.resolvedForCurrentContext()
 
         // Perform scrolling.
 
-        return self.preparePresentationStateForScroll(to: toIndexPath, handlerWhenFailed: nil)  {
+        return self.preparePresentationStateForScroll(to: toIndexPath, handlerWhenFailed: completion)  {
             let contentHeight = self.collectionViewLayout.collectionViewContentSize.height
             let contentFrameHeight = self.collectionView.visibleContentFrame.height
 
             guard contentHeight > contentFrameHeight else {
+                self.handleScrollCompletion(reason: .cannotScroll, completion: completion)
                 return
             }
 
             let contentOffsetY = contentHeight - contentFrameHeight - self.collectionView.adjustedContentInset.top
-            let contentOffset = CGPoint(x: self.collectionView.contentOffset.x, y: contentOffsetY)
-            
-            self.collectionView.setContentOffset(contentOffset, animated: shouldAnimate)
+
+            self.applyScroll(
+                with: animation,
+                to: CGPoint(x: self.collectionView.contentOffset.x, y: contentOffsetY),
+                completion: completion
+            )
         }
     }
     
@@ -885,7 +1064,7 @@ public final class ListView : UIView
         case cannotScroll
         case scrolled(animated: Bool)
     }
-    
+
     /// This function is used by programmatic scrolling APIs that provide a scroll
     /// completion handler. This will execute the `completion` handler after scrolling
     /// is finished, or it will execute immediately if scrolling is not possible or if
@@ -914,6 +1093,160 @@ public final class ListView : UIView
         }
     }
 
+    /// Moves the content offset to `targetOffset` using the provided `animation`, and
+    /// reports `completion` once it gets there.
+    ///
+    /// Callers that have already determined the list cannot scroll should report
+    /// `.cannotScroll` themselves instead of calling this.
+    private func applyScroll(
+        with animation: ScrollAnimation,
+        to targetOffset: CGPoint,
+        completion: ScrollCompletion?
+    ) {
+        // Whatever this scroll is, it supersedes one that is still running.
+        cancelScrollAnimation()
+
+        switch animation.storage {
+        case .none, .system:
+            // A scroll with nowhere to go starts no animation, so the scroll view never
+            // calls `scrollViewDidEndScrollingAnimation(_:)` and a handler queued for that
+            // callback would wait forever. Report it the way an unanimated scroll is
+            // reported instead.
+            guard collectionView.contentOffset != targetOffset else {
+                handleScrollCompletion(reason: .scrolled(animated: false), completion: completion)
+                return
+            }
+
+            collectionView.setContentOffset(targetOffset, animated: animation.usesSystemAnimation)
+            handleScrollCompletion(
+                reason: .scrolled(animated: animation.usesSystemAnimation),
+                completion: completion
+            )
+
+        case .duration(let duration):
+            driveScroll(to: targetOffset, duration: duration, completion: completion)
+        }
+    }
+
+    /// Applies a content offset change described by `changeOffset` using the provided
+    /// `animation`, and reports `completion` once that change has finished.
+    ///
+    /// Prefer `applyScroll(with:to:completion:)`. This variant exists for scrolls whose
+    /// destination only the collection view knows — `scrollToItem(at:at:animated:)` and
+    /// `scrollRectToVisible(_:animated:)` compute where they land internally, so a driven
+    /// animation has to perform the change unanimated and read the resulting offset back.
+    ///
+    /// `changeOffset` receives whether it should ask the scroll view to animate, and may be
+    /// invoked more than once — an unanimated call is how this discovers where the scroll
+    /// would land.
+    ///
+    /// Callers that have already determined the list cannot scroll should report
+    /// `.cannotScroll` themselves instead of calling this.
+    private func applyScroll(
+        with animation: ScrollAnimation,
+        completion: ScrollCompletion?,
+        changeOffset: (_ animated: Bool) -> Void
+    ) {
+        // Whatever this scroll is, it supersedes one that is still running.
+        cancelScrollAnimation()
+
+        switch animation.storage {
+        case .none, .system:
+            // As in `applyScroll(with:to:completion:)`, an animated scroll that does not
+            // move reports nothing, stranding a queued handler. Only this variant cannot
+            // see that in advance, so it has to perform the change unanimated to find out.
+            // That costs a layout pass, so it is only worth doing when there is in fact a
+            // handler to strand.
+            if animation.usesSystemAnimation, completion != nil {
+                let startOffset = collectionView.contentOffset
+
+                changeOffset(false)
+
+                let movesContent = collectionView.contentOffset != startOffset
+
+                collectionView.setContentOffset(startOffset, animated: false)
+
+                guard movesContent else {
+                    handleScrollCompletion(reason: .scrolled(animated: false), completion: completion)
+                    return
+                }
+            }
+
+            changeOffset(animation.usesSystemAnimation)
+            handleScrollCompletion(
+                reason: .scrolled(animated: animation.usesSystemAnimation),
+                completion: completion
+            )
+
+        case .duration(let duration):
+            let startOffset = collectionView.contentOffset
+
+            changeOffset(false)
+
+            let targetOffset = collectionView.contentOffset
+
+            // Back to where the scroll started, so the driver can animate the distance
+            // itself. Restoring here rather than on the driver's first frame avoids
+            // displaying a frame at the target.
+            collectionView.setContentOffset(startOffset, animated: false)
+
+            driveScroll(to: targetOffset, duration: duration, completion: completion)
+        }
+    }
+
+    /// Animates the content offset to `targetOffset` over `duration`, a frame at a time.
+    private func driveScroll(
+        to targetOffset: CGPoint,
+        duration: TimeInterval,
+        completion: ScrollCompletion?
+    ) {
+        let startOffset = collectionView.contentOffset
+
+        guard startOffset != targetOffset else {
+            handleScrollCompletion(reason: .scrolled(animated: false), completion: completion)
+            return
+        }
+
+        // The handler is queued exactly as it is for the scroll view's own animation. The
+        // driver reports through `didEndScrollingAnimation()` below, which drains it.
+        handleScrollCompletion(reason: .scrolled(animated: true), completion: completion)
+
+        let driver = ScrollAnimationDriver(
+            scrollView: collectionView,
+            from: startOffset,
+            to: targetOffset,
+            duration: duration,
+            completion: { [weak self] in
+                guard let self else { return }
+
+                self.scrollAnimationDriver = nil
+
+                // Report the end of a driven animation the same way the delegate reports
+                // the end of the scroll view's own, so an observer cannot tell them apart.
+                self.didEndScrollingAnimation()
+            }
+        )
+
+        scrollAnimationDriver = driver
+
+        driver.start()
+    }
+
+    /// The driver for an in-flight `ScrollAnimation.duration` scroll, if there is one.
+    private var scrollAnimationDriver: ScrollAnimationDriver?
+
+    /// Stops a driven scroll animation where it is, reporting its completion.
+    ///
+    /// A driven scroll is stopped by the same things that stop the scroll view's own
+    /// animation: the user taking hold of the list, or another scroll replacing it.
+    func cancelScrollAnimation() {
+        guard let driver = scrollAnimationDriver else { return }
+
+        scrollAnimationDriver = nil
+
+        driver.cancel()
+    }
+
     private func performScrollCompletion(_ completion: ScrollCompletion, positionInfo: ListScrollPositionInfo) {
         let actions = ListActions()
         actions.listView = self
@@ -930,11 +1263,20 @@ public final class ListView : UIView
         let positionInfo: ListScrollPositionInfo
     }
     
-    /// This is called by the `ListView.Delegate` and is used to notify the
-    /// `scrollCompletionHandler` that scrolling finished. This does nothing if there is
-    /// no handler set.
-    internal func didEndScrolling() {
-        self.performScrollCompletions(self.drainScrollCompletionHandlers())
+    /// Called when a scrolling animation ends, whether the scroll view ran the animation
+    /// or the list drove it itself. Notifies the `ListStateObserver` and any scroll
+    /// completion handlers.
+    internal func didEndScrollingAnimation() {
+        let scrollCompletions = drainScrollCompletionHandlers()
+
+        ListStateObserver.perform(stateObserver.onDidEndScrollingAnimation, "Did End Scrolling Animation", with: self) { actions in
+            ListStateObserver.DidEndScrollingAnimation(
+                actions: actions,
+                positionInfo: self.scrollPositionInfo
+            )
+        }
+
+        performScrollCompletions(scrollCompletions)
     }
 
     internal func drainScrollCompletionHandlers() -> ScrollCompletionBatch? {
@@ -1559,6 +1901,10 @@ public final class ListView : UIView
         switch reason {
         case .contentChanged(_, let identifierChanged):
             if identifierChanged {
+                // The content this list is showing has been replaced, so a scroll toward a
+                // position within the old content no longer means anything.
+                cancelScrollAnimation()
+
                 let contentOffset = CGPoint(x: 0, y: -collectionView.adjustedContentInset.top)
                 collectionView.setContentOffset(contentOffset, animated: false)
             }
@@ -1726,7 +2072,7 @@ public final class ListView : UIView
     private func performScroll(
         to targetFrame : CGRect,
         scrollPosition : ScrollPosition,
-        animated: Bool = false,
+        animation: ScrollAnimation = .none,
         completion: ScrollCompletion? = nil
     ) {
         // If the item is already visible and that's good enough, return.
@@ -1736,9 +2082,6 @@ public final class ListView : UIView
             handleScrollCompletion(reason: .cannotScroll, completion: completion)
             return
         }
-
-        // If user is performing this in a `UIView.performWithoutAnimation` block, respect that and don't animate, regardless of what the animated parameter is.
-        let shouldAnimate = animated && UIView.areAnimationsEnabled
 
         let topInset = collectionView.adjustedContentInset.top
         let contentFrameHeight = collectionView.visibleContentFrame.height
@@ -1755,34 +2098,16 @@ public final class ListView : UIView
             resultOffset.y = adjustedOriginY - (contentFrameHeight - targetFrame.size.height)
         }
 
-        // Don't scroll past the bottom of the list.
-
-        let maxOffsetHeight = collectionViewLayout.collectionViewContentSize.height - contentFrameHeight - topInset
-        resultOffset.y = min(resultOffset.y, maxOffsetHeight)
-
-        // Don't scroll beyond the top of the list.
-
-        resultOffset.y = max(resultOffset.y, -topInset)
-        
-        let roundedResultOffset = CGPoint(
-            x: round(resultOffset.x),
-            y: round(resultOffset.y)
+        performScroll(
+            toContentOffset: resultOffset,
+            animation: animation,
+            completion: completion
         )
-        let roundedCurrentOffset = CGPoint(
-            x: round(collectionView.contentOffset.x),
-            y: round(collectionView.contentOffset.y)
-        )
-        if roundedCurrentOffset != roundedResultOffset {
-            collectionView.setContentOffset(resultOffset, animated: shouldAnimate)
-            handleScrollCompletion(reason: .scrolled(animated: shouldAnimate), completion: completion)
-        } else {
-            handleScrollCompletion(reason: .cannotScroll, completion: completion)
-        }
     }
 
     private func performScroll(
         toContentOffset contentOffset : CGPoint,
-        animated: Bool = false,
+        animation: ScrollAnimation = .none,
         completion: ScrollCompletion? = nil
     ) {
         let resultOffset = clampedContentOffset(contentOffset)
@@ -1795,12 +2120,13 @@ public final class ListView : UIView
             x: round(collectionView.contentOffset.x),
             y: round(collectionView.contentOffset.y)
         )
-        if roundedCurrentOffset != roundedResultOffset {
-            collectionView.setContentOffset(resultOffset, animated: animated)
-            handleScrollCompletion(reason: .scrolled(animated: animated), completion: completion)
-        } else {
+
+        guard roundedCurrentOffset != roundedResultOffset else {
             handleScrollCompletion(reason: .cannotScroll, completion: completion)
+            return
         }
+
+        applyScroll(with: animation, to: resultOffset, completion: completion)
     }
 
     private func clampedContentOffset(_ contentOffset : CGPoint) -> CGPoint {
